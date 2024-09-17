@@ -8,7 +8,8 @@
 ## Setup
 1. Clone the repository:
    ```
-   git clone https://github.com/username/repo-name.git
+   git clone https://github.com/ParisaAlizadeh2003/cryptography-tool.git
+
    ```
 
 2. Install the required dependencies:
