@@ -1,11 +1,10 @@
 import wx
 import os
-import string
-import random
 from pathlib import Path
-
-encode = ' ' + '\'' + string.ascii_letters + string.digits + string.punctuation
-encodelist = list(encode)
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import padding
+import base64
 
 class MyApp(wx.App):
     def OnInit(self):
@@ -79,19 +78,6 @@ class MyFrame(wx.Frame):
         secret_panel.SetSizer(secret_sizer)
         main_sizer.Add(secret_panel, 0, wx.ALL | wx.EXPAND, 5)
 
-        # Folder path
-        folder_panel = wx.Panel(panel)
-        folder_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        lbl_folder_path = wx.StaticText(folder_panel, label="Folder Path: ")
-        folder_sizer.Add(lbl_folder_path, 0, wx.ALL | wx.CENTER, 5)
-        self.txt_folder_path = wx.TextCtrl(folder_panel, size=(300, -1))
-        folder_sizer.Add(self.txt_folder_path, 1, wx.ALL | wx.EXPAND, 5)
-        btn_browse_folder = wx.Button(folder_panel, label="Browse")
-        btn_browse_folder.Bind(wx.EVT_BUTTON, self.browse_folder)
-        folder_sizer.Add(btn_browse_folder, 0, wx.ALL, 5)
-        folder_panel.SetSizer(folder_sizer)
-        main_sizer.Add(folder_panel, 0, wx.ALL | wx.EXPAND, 5)
-
         panel.SetSizer(main_sizer)
         self.CreateStatusBar()
         self.SetStatusText("Ready")
@@ -106,11 +92,6 @@ class MyFrame(wx.Frame):
                            style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as dlg:
             if dlg.ShowModal() == wx.ID_OK:
                 self.txt_secret.SetValue(dlg.GetPath())
-
-    def browse_folder(self, event):
-        with wx.DirDialog(self, "Choose a directory:", style=wx.DD_DEFAULT_STYLE) as dlg:
-            if dlg.ShowModal() == wx.ID_OK:
-                self.txt_folder_path.SetValue(dlg.GetPath())
 
     def show_files(self, event):
         path = Path(self.txt_path.GetValue())
@@ -129,9 +110,8 @@ class MyFrame(wx.Frame):
             wx.MessageBox("Please specify a valid path and extension", "Error")
             return
 
-        key_list = list(encode)
-        random.shuffle(key_list)
-        secret_key = ''.join(key_list)
+        secret_key = os.urandom(32)  # AES 256-bit key
+        iv = os.urandom(16)
 
         progress_dialog = wx.ProgressDialog("Encrypting Files",
                                             "Please wait while files are being encrypted...",
@@ -143,15 +123,22 @@ class MyFrame(wx.Frame):
             for idx, file_path in enumerate(self.pth):
                 with open(file_path, 'rb') as file:
                     content = file.read()
-                encrypted_content = bytearray()
-                for byte in content:
-                    encrypted_content.append(ord(key_list[byte % len(key_list)]))
+                
+                # Add padding to the content
+                padder = padding.PKCS7(128).padder()
+                padded_data = padder.update(content) + padder.finalize()
+
+                cipher = Cipher(algorithms.AES(secret_key), modes.CBC(iv), backend=default_backend())
+                encryptor = cipher.encryptor()
+                encrypted_content = encryptor.update(padded_data) + encryptor.finalize()
+
                 with open(file_path, 'wb') as file:
-                    file.write(encrypted_content)
+                    file.write(iv + encrypted_content)  # Write IV and encrypted content together
+                
                 progress_dialog.Update(idx + 1)
             progress_dialog.Destroy()
 
-            with open('secret.key', 'w', encoding='utf-8') as file:
+            with open('secret.key', 'wb') as file:
                 file.write(secret_key)
             os.startfile('secret.key')
             self.SetStatusText("Encryption completed successfully")
@@ -163,18 +150,15 @@ class MyFrame(wx.Frame):
 
     def decrypt_files(self, event):
         try:
-            with open(self.txt_secret.GetValue(), 'r', encoding='utf-8') as file:
+            with open(self.txt_secret.GetValue(), 'rb') as file:
                 secret_key = file.read()
-            secret_list = list(secret_key)
         except Exception as e:
             wx.MessageBox(f"An error occurred reading the secret key: {e}", "Error")
             self.SetStatusText("Decryption failed")
             return
 
-        path = Path(self.txt_folder_path.GetValue())
-        if not path.exists():
-            wx.MessageBox("The specified folder path does not exist", "Error")
-            self.SetStatusText("Decryption failed")
+        if not self.pth:
+            wx.MessageBox("Please specify a valid path and extension", "Error")
             return
 
         progress_dialog = wx.ProgressDialog("Decrypting Files",
@@ -186,21 +170,29 @@ class MyFrame(wx.Frame):
         try:
             for idx, file_path in enumerate(self.pth):
                 with open(file_path, 'rb') as file:
-                    content = file.read()
-                decrypted_content = bytearray()
-                for byte in content:
-                    decrypted_content.append(encodelist.index(chr(byte)))
+                    iv = file.read(16)  # Read the IV
+                    encrypted_content = file.read()
+
+                cipher = Cipher(algorithms.AES(secret_key), modes.CBC(iv), backend=default_backend())
+                decryptor = cipher.decryptor()
+                decrypted_padded_content = decryptor.update(encrypted_content) + decryptor.finalize()
+
+                # Remove padding
+                unpadder = padding.PKCS7(128).unpadder()
+                decrypted_content = unpadder.update(decrypted_padded_content) + unpadder.finalize()
+
                 with open(file_path, 'wb') as file:
                     file.write(decrypted_content)
+
                 progress_dialog.Update(idx + 1)
             progress_dialog.Destroy()
-
             self.SetStatusText("Decryption completed successfully")
+
         except Exception as e:
-            wx.MessageBox(f"An error occurred processing file {file_path}: {e}", "Error")
+            wx.MessageBox(f"An error occurred: {e}", "Error")
             self.SetStatusText("Decryption failed")
             progress_dialog.Destroy()
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     app = MyApp()
     app.MainLoop()
